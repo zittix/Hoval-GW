@@ -23,11 +23,16 @@ Setup required
     ```
     sudo apt-get install -y can-utils python3
     ```
-6. Setup the CAN adpater to be up at boot time with 50kbps that matches Hoval CAN bus speed:
+6. Install needed python packages:
+    ```
+    pip3 install python-can paho-mqtt
+    ```
+   
+7. Setup the CAN adpater to be up at boot time with 50kbps that matches Hoval CAN bus speed:
     ```
     echo "ip link set can0 up type can bitrate 50000" >> /etc/rc.local
     ```
-7. Reboot the PI
+8. Reboot the PI
 
 
 Hoval GW Python script
