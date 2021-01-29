@@ -11,6 +11,7 @@ Setup required
 1. Raspberry PI
 2. CAN Transceiver and adapter (for example from Alibaba or Wish..)
 
+### Instructions
 1. Modify your CAN adapter and wire it to the Raspberry PI by following https://www.raspberrypi.org/forums/viewtopic.php?t=141052
 2. Connect the CAN adapter to the H,L and ground lines of your Hoval appliance. Depending on the appliance it requires opening up the panel with the screen. Behind it there are a lot of connectors. One of them is labelled 'CAN bus'. You can connect your 3 wires (H, L and ground) there.
 3. Flash the latest Debian version on your Raspberry PI
