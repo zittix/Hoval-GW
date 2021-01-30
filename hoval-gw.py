@@ -7,6 +7,9 @@ import can
 import asyncio
 import logging
 import paho.mqtt.client as mqtt
+import sys
+
+logging.basicConfig(level=logging.DEBUG)
 
 # Change this to match your Home-Assistant / MQTT broker
 broker = '192.168.0.96'
@@ -253,6 +256,8 @@ data_idx = {
     (0,0,21125): ("Info 1 0-10V","S16",1),
     (0,0,21126): ("Info 2 0-10V","S16",1),
     (0,0,21127): ("Info 3 0-10V","S16",1),
+    (1,0,0x01F9): ("Mode chauffage", "STR", 0),
+    (0,0,0xFFA): ("Identification appareil", "STR", 1),
 }
 
 def convert_data(arr, msg):
@@ -265,29 +270,82 @@ def convert_data(arr, msg):
     elif  msg[1] == 'LIST':
         val = int.from_bytes(arr, byteorder='big', signed=False)
         return val
+    elif msg[1] == 'STR':
+        return arr.decode('utf-8')
     else:
         print('Unknown ', msg[1])
         return None
 
-def parse(msg):
-    # For now we only care about ID 1FC00FFF
-    if msg.arbitration_id == 0x1FC00FFF and len(msg.data) >= 7:
-        id1 = msg.data[0]
-        id2 = msg.data[1]
-        # 42 looks like an answer, 40 is a request..
-        if id1 == 0x01 and id2 == 0x42:
-            # Data point
-            function_group = msg.data[2]
-            function_number = msg.data[3]
-            datapoint = int.from_bytes(msg.data[4:6], byteorder='big', signed=False)
-            idp = (function_group, function_number, datapoint)
-            if idp in data_idx:
-                point = data_idx[idp]
-                out = convert_data(msg.data[6:], point)
-                if out:
-                    return (point[0], out)
+def parse_can_id(id):
+    # First 2 bytes, messages prio & offsets
+    # Last 2 bytes device type and device ID??
+    return (id >> 16, (id >> 8) & 0xff, id & 0xff)
+
+pending_msg = {}
+
+devices = {}
+
+REQUEST = 0x40
+ANSWER = 0x42
+SET_REQUEST = 0x46
+
+def interpret_message(data):
+    if data[0] == ANSWER: # Answer from request
+        # Data point
+        function_group = data[1]
+        function_number = data[2]
+        datapoint = int.from_bytes(data[3:5], byteorder='big', signed=False)
+        idp = (function_group, function_number, datapoint)
+        if idp in data_idx:
+            point = data_idx[idp]
+            out = convert_data(data[5:], point)
+            if out:
+                return (point[0], out)
+        else:
+            logging.error("No known point found for (%d,%d,%d), len %d", function_group, function_number, datapoint, len(data))
     else:
-        pass # skip
+        logging.debug("Unknown op code: %02x", data[0])
+
+def parse(msg):
+    id = parse_can_id(msg.arbitration_id)
+    # logging.info("%x (%x,%x)", id[0], id[1], id[2])
+    msg_id = id[0] >> 8
+    if id[1] != 0x0f or id[2] != 0xff:
+        # Message to a device with device ID / device type? Not sure
+        if (id[1],id[2]) not in devices:
+            logging.info("Message to device type / id: %02x,%02x", id[1], id[2])
+            devices[(id[1],id[2])] = True
+        return None
+
+    if msg_id == 0x1f:
+        if len(msg.data) >= 2:
+            # Start of a message
+
+            # Number of CAN message we need to get to rebuild this message, 0 is none.
+            msg_len = msg.data[0] >> 3
+            if msg_len == 0:
+                return interpret_message(msg.data[1:])
+            else:
+                msg_header = msg.data[1]
+                pending_msg[msg_header] = {
+                    "data": msg.data[2:],
+                    "nb_remaining": msg_len - 1
+                }
+        else:
+            logging.error("Message too small")
+    else:
+        # Message part
+        msg_header = msg.data[0]
+        # Check if we are expecting it
+        if msg_header in pending_msg:
+            pending_msg[msg_header]["data"] = pending_msg[msg_header]["data"] + msg.data[1:]
+            pending_msg[msg_header]["nb_remaining"] -= 1
+            if pending_msg[msg_header]["nb_remaining"] == 0:
+                # Done receiving the big message, yeah
+                # Remove the CRC bytes (Not sure what type of CRC it is..)
+                data = pending_msg[msg_header]["data"][:-2]
+                del pending_msg[msg_header]
+                return interpret_message(data)
     return None
 
 async def main():
@@ -312,6 +370,7 @@ async def main():
         msg = await reader.get_message()
         parsed = parse(msg)
         if parsed:
+            logging.info(parsed)
             client.publish("hoval-gw/"+parsed[0], parsed[1])
 
     # Clean-up
