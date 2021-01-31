@@ -3,7 +3,7 @@ Hoval Gateway Demo
 
 This repository contains a sample file demonstrating how to parse the data flowing through the Hoval CAN bus used by Hoval heaters and other appliances from Hoval.
 
-Not everything is recognized (only <8 bytes messages are parsed, longer is not yet supported). Moreover we only listen on message ID 0x1FC00FFF. Which means if your setup has different device / address this needs to be adapted.
+Not everything is recognized yet. Only request and response for data points are recognized.
 
 Setup required
 --------------
