@@ -257,16 +257,24 @@ data_idx = {
     (0,0,21126): ("Info 2 0-10V","S16",1),
     (0,0,21127): ("Info 3 0-10V","S16",1),
     (1,0,0x01F9): ("Mode chauffage", "STR", 0),
-    (0,0,0xFFA): ("Identification appareil", "STR", 1),
+    (0,0,0xFFA): ("Identification appareil", "STR", 0),
+    (1,0,0x1F6): ("Heating 1 - Current day programme name", "STR", 0),
+    (1,0,0x1F9): ("Heating 1 - Current week programme name", "STR", 0),
+    (1,0,504): ("ID current week programme", "U8", 0),
+    (1,0,3058): ("Comfort temperature", "S16", 1),
+    (1,0,4005): ("Circulation pump function","STR",0),
+    (1,0,7014): ("Cooling mode activation","U8",0),
+    (1,0,503): ("Display status", "U8", 0),
+    (1,0,20125): ("Energiezentrale", "U8", 0),
 }
 
 def convert_data(arr, msg):
     if msg[1] == 'U8' or msg[1] == 'U16' or msg[1] == 'U32':
         val = int.from_bytes(arr, byteorder='big', signed=False)
-        return val * 10**(-msg[2])
+        return val / 10**(msg[2])
     elif msg[1] == 'S8' or msg[1] == 'S16' or msg[1] == 'S32':
         val = int.from_bytes(arr, byteorder='big', signed=True)
-        return val * 10**(-msg[2])
+        return val / 10**(msg[2])
     elif  msg[1] == 'LIST':
         val = int.from_bytes(arr, byteorder='big', signed=False)
         return val
@@ -303,8 +311,26 @@ def interpret_message(data):
                 return (point[0], out)
         else:
             logging.error("No known point found for (%d,%d,%d), len %d", function_group, function_number, datapoint, len(data))
+    elif data[0] == SET_REQUEST:
+        function_group = data[1]
+        function_number = data[2]
+        datapoint = int.from_bytes(data[3:5], byteorder='big', signed=False)
+        idp = (function_group, function_number, datapoint)
+        if idp in data_idx:
+            logging.debug("Setting data %s", data_idx[idp][0])
+        else:
+            logging.debug("Setting data %s", idp)
+    elif data[0] == REQUEST:
+        function_group = data[1]
+        function_number = data[2]
+        datapoint = int.from_bytes(data[3:5], byteorder='big', signed=False)
+        idp = (function_group, function_number, datapoint)
+        if idp in data_idx:
+            logging.debug("Requesting %s", data_idx[idp][0])
+        else:
+            logging.debug("Requesting %s", idp)
     else:
-        logging.debug("Unknown op code: %02x", data[0])
+        logging.debug("Unknown op code: 0x%02x", data[0])
 
 def parse(msg):
     id = parse_can_id(msg.arbitration_id)
@@ -324,7 +350,11 @@ def parse(msg):
             # Number of CAN message we need to get to rebuild this message, 0 is none.
             msg_len = msg.data[0] >> 3
             if msg_len == 0:
-                return interpret_message(msg.data[1:])
+                try:
+                    return interpret_message(msg.data[1:])
+                except:
+                    logging.exception(msg.data)
+                    return None
             else:
                 msg_header = msg.data[1]
                 pending_msg[msg_header] = {
@@ -345,7 +375,11 @@ def parse(msg):
                 # Remove the CRC bytes (Not sure what type of CRC it is..)
                 data = pending_msg[msg_header]["data"][:-2]
                 del pending_msg[msg_header]
-                return interpret_message(data)
+                try:
+                    return interpret_message(data)
+                except:
+                    logging.exception(data)
+                    return None
     return None
 
 async def main():
