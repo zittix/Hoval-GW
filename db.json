@@ -2569,7 +2569,7 @@
         "unit": null,
         "comment": {
             "de": "Zustand Heizkreisregelung:#0 = Abgeschaltet#1 = Normal Heizbetrieb#2 = Komfort Heizbetrieb#3 = Spar Heizbetrieb#4 = Frostbetrieb#5 = Zwangsabnahme (bei Zwang > +50%)#6 = Zwangsdrosselung  (bei Zwang < -50%)#7 = Ferienbetrieb#8 = Partybetrieb#9 = Normal K?hlbetrieb#10 = Komfort K?hlbetrieb#11 = Spar K?hlbetrieb#12 = Stoerung#13 = Handbetrieb#14 = Schutz K?hlbetrieb#15 = Partybetrieb K?hlen#16 = Austrocknung Aufheizphase#17 = Austrocknung Stationaerphase#18 = Austrocknung Abk?hlphase#19 = Austrocknung Endphase#22 = K?hlbetrieb Extern/Konstantanforderung#23 = Heizbetrieb Extern/Konstantanforderung#26 = Vorzugsbetrieb SmartGrid",
-            "en": null,
+            "en": "Status of heating circuit control: 0 = Switched off\n1 = Normal heating operation\n2 = Comfort heating operation 3 = Economy heating operation 4 = Frost operation\n5 = Force acceptance (with force > +50%) 6 = Force throttling (with force < -50%)\n7 = Holiday operation\n8 = Party operation\n9 = Normal cooling operation\n10 = Comfort cooling operation\n11 = Economy cooling operation\n12 = Fault\n13 = Manual operation\n14 = Protection cooling operation\n15 = Party operation cooling\n16 = Drying heating-up phase\n17 = Drying stationary phase\n18 = Drying cooling-down phase\n19 = Drying end phase\n22 = Cooling operation external/constant request 23 = Heating operation external/constant request 26 = Preferential operation SmartGrid",
             "fr": null,
             "it": null
         }
