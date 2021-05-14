@@ -7,7 +7,7 @@ import can
 import asyncio
 import logging
 import paho.mqtt.client as mqtt
-import sys
+import time
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -15,6 +15,17 @@ logging.basicConfig(level=logging.DEBUG)
 broker = '192.168.0.96'
 broker_username = "hoval"
 broker_password = "hoval"
+
+# If you want data to be periodically queried, add them to below list
+# IDs comes from below list
+# Warning: for now the device address to poll is fixed since I don't know yet
+# how the addresses are assigned
+polled_data = [
+    (0,0,0) # Outside temperature sensor polling
+]
+
+# Polling interval for data (in seconds)
+POLLING_INTERVAL = 5
 
 # This is extracted from http://www.hoval.com/misc/TTE/TTE-GW-Modbus-datapoints.xlsx
 # (X,Y,Z) means X: Function group, Y: Function number, Z: Datapoint ID
@@ -332,6 +343,17 @@ def interpret_message(data):
     else:
         logging.debug("Unknown op code: 0x%02x", data[0])
 
+def query(id):
+    """Send a query for the provided id a 3-tuple"""
+    assert len(id) == 3
+    data = (
+        int.to_bytes(REQUEST, 1, byteorder='big') +
+        int.to_bytes(id[0], 1, byteorder='big') +
+        int.to_bytes(id[1], 1, byteorder='big') +
+        int.to_bytes(id[2], 2, byteorder='big')
+    )
+    return data
+
 def parse(msg):
     id = parse_can_id(msg.arbitration_id)
     # logging.info("%x (%x,%x)", id[0], id[1], id[2])
@@ -399,7 +421,10 @@ async def main():
     client.username_pw_set(username=broker_username,password=broker_password)
     client.connect(broker)
 
+    last_query = time.time()
+
     while True:
+        polled_data
         # Wait for next message from AsyncBufferedReader
         msg = await reader.get_message()
         parsed = parse(msg)
@@ -407,9 +432,28 @@ async def main():
             logging.info(parsed)
             client.publish("hoval-gw/"+parsed[0], parsed[1])
 
+        if time.time() - last_query >= POLLING_INTERVAL:
+            start_id = 0
+            for i in polled_data:
+                data = query(i)
+                try:
+                    arb_id = start_id % 0x10
+                    arb_id = (0x1F0 + arb_id) << 16
+                    arb_id += 0x0801 # This is the fixed address?
+                    msg = can.Message(arbitration_id=arb_id,
+                        data=list(data),
+                        is_extended_id=True)
+                    can0.send(msg)
+                    start_id += 1
+                except can.CanError as e:
+                    logging.exception(e)
+            last_query = time.time()
+
     # Clean-up
     notifier.stop()
     can0.shutdown()
+
+print(query((0,1,2)))
 
 # Get the default event loop
 loop = asyncio.get_event_loop()
