@@ -347,6 +347,7 @@ def query(id):
     """Send a query for the provided id a 3-tuple"""
     assert len(id) == 3
     data = (
+        int.to_bytes(0x01, 1, byteorder='big') +
         int.to_bytes(REQUEST, 1, byteorder='big') +
         int.to_bytes(id[0], 1, byteorder='big') +
         int.to_bytes(id[1], 1, byteorder='big') +
