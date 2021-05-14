@@ -12,7 +12,7 @@ import time
 logging.basicConfig(level=logging.DEBUG)
 
 # Change this to match your Home-Assistant / MQTT broker
-broker = '192.168.0.96'
+broker = '192.168.3.2'
 broker_username = "hoval"
 broker_password = "hoval"
 
@@ -347,6 +347,7 @@ def query(id):
     """Send a query for the provided id a 3-tuple"""
     assert len(id) == 3
     data = (
+        int.to_bytes(0x01, 1, byteorder='big') +
         int.to_bytes(REQUEST, 1, byteorder='big') +
         int.to_bytes(id[0], 1, byteorder='big') +
         int.to_bytes(id[1], 1, byteorder='big') +
@@ -407,11 +408,11 @@ def parse(msg):
 async def main():
     can0 = can.Bus(channel='can0', bustype='socketcan', receive_own_messages=False)
     reader = can.AsyncBufferedReader()
-    #logger = can.Logger('logfile.log')
+    logger = can.Logger('canlog.log')
 
     listeners = [
         reader,         # AsyncBufferedReader() listener
-        #logger          # Regular Listener object
+        logger          # Regular Listener object
     ]
     # Create Notifier with an explicit loop to use for scheduling of callbacks
     loop = asyncio.get_event_loop()
@@ -430,7 +431,9 @@ async def main():
         parsed = parse(msg)
         if parsed:
             logging.info(parsed)
-            client.publish("hoval-gw/"+parsed[0], parsed[1])
+            ret=client.publish("hoval-gw/"+parsed[0], parsed[1])
+            if ret[0] != 0:
+                client.connect(broker)
 
         if time.time() - last_query >= POLLING_INTERVAL:
             start_id = 0
@@ -452,8 +455,6 @@ async def main():
     # Clean-up
     notifier.stop()
     can0.shutdown()
-
-print(query((0,1,2)))
 
 # Get the default event loop
 loop = asyncio.get_event_loop()
