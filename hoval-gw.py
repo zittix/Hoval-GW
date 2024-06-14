@@ -45,6 +45,8 @@ def convert_data(arr, msg):
         return val / 10**(msg[2])
     elif  msg[1] == 'LIST':
         val = int.from_bytes(arr, byteorder='big', signed=False)
+        if len(msg) > 3 and str(val) in msg[3]:
+            return msg[3][str(val)]
         return val
     elif msg[1] == 'STR':
         return arr.decode('utf-8')
