@@ -12,7 +12,7 @@ import time
 logging.basicConfig(level=logging.DEBUG)
 
 # Change this to match your Home-Assistant / MQTT broker
-broker = '192.168.3.2'
+broker = '192.168.3.7'
 broker_username = "hoval"
 broker_password = "hoval"
 
@@ -21,7 +21,7 @@ broker_password = "hoval"
 # Warning: for now the device address to poll is fixed since I don't know yet
 # how the addresses are assigned
 polled_data = [
-    (0,0,0) # Outside temperature sensor polling
+    (0,0,0), # Outside temperature sensor polling
 ]
 
 # Polling interval for data (in seconds)
@@ -277,6 +277,14 @@ data_idx = {
     (1,0,7014): ("Cooling mode activation","U8",0),
     (1,0,503): ("Display status", "U8", 0),
     (1,0,20125): ("Energiezentrale", "U8", 0),
+    (1,0,3001): ("Base point flow temp. heating char.", "S16",1),
+    (1,0,3011): ("Base point OT heating and cooling char.","S16",1),
+    (1,0,3012): ("Conf. point OT heating characteristic","S16",1),
+    (1,0,3013): ("Design point supply temp. heating curve","S16",1),
+    (1,0,7008): ("Flow maximum temp.", "S16",1),
+    (1,0,3047): ("Conf. point OT cooling characte- ristic", "S16",1),
+    (1,0,3048): ("Conf. point flow temp. cooling char.", "S16",1),
+    (1,0,3043):("Base point flow temp. cooling char.","S16",1),
 }
 
 def convert_data(arr, msg):
@@ -420,7 +428,11 @@ async def main():
 
     client = mqtt.Client("hoval-client")
     client.username_pw_set(username=broker_username,password=broker_password)
-    client.connect(broker)
+    try:
+        client.connect(broker)
+    except:
+        time.sleep(30)
+        client.connect(broker)
 
     last_query = time.time()
 
@@ -433,7 +445,14 @@ async def main():
             logging.info(parsed)
             ret=client.publish("hoval-gw/"+parsed[0], parsed[1])
             if ret[0] != 0:
-                client.connect(broker)
+                connected = False
+                while not connected:
+                    try:
+                        client.connect(broker)
+                        connected = True
+                    except:
+                        time.sleep(5)
+
 
         if time.time() - last_query >= POLLING_INTERVAL:
             start_id = 0
