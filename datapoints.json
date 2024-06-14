@@ -20,7 +20,16 @@
         "value": [
             "Sélection fonctionnement chauffage",
             "LIST",
-            0
+            0,
+            {
+                "0": "Standby operation",
+                "1": "Automatic operation",
+                "4": "Continuous normal operation",
+                "5": "Continuous economy operation",
+                "6": "Summer operation",
+                "7": "Manual operation heating",
+                "8": "Manual operation cooling"
+            }
         ]
     },
     {
@@ -32,7 +41,16 @@
         "value": [
             "Sélection fonctionnement chauffage",
             "LIST",
-            0
+            0,
+            {
+                "0": "Standby operation",
+                "1": "Automatic operation",
+                "4": "Continuous normal operation",
+                "5": "Continuous economy operation",
+                "6": "Summer operation",
+                "7": "Manual operation heating",
+                "8": "Manual operation cooling"
+            }
         ]
     },
     {
@@ -44,7 +62,16 @@
         "value": [
             "Sélection fonctionnement chauffage",
             "LIST",
-            0
+            0,
+            {
+                "0": "Standby operation",
+                "1": "Automatic operation",
+                "4": "Continuous normal operation",
+                "5": "Continuous economy operation",
+                "6": "Summer operation",
+                "7": "Manual operation heating",
+                "8": "Manual operation cooling"
+            }
         ]
     },
     {
@@ -295,8 +322,30 @@
         ],
         "value": [
             "Statut régulation circuit de chauffage",
-            "U8",
-            0
+            "LIST",
+            0,
+            {
+                "0": "Switched off",
+                "1": "Normal heating operation",
+                "2": "Comfort heating operation 3 = Economy heating operation 4 = Frost operation",
+                "5": "Force acceptance (with force > +50%) 6 = Force throttling (with force < -50%)",
+                "7": "Holiday operation",
+                "8": "Party operation",
+                "9": "Normal cooling operation",
+                "10": "Comfort cooling operation",
+                "11": "Economy cooling operation",
+                "12": "Fault",
+                "13": "Manual operation",
+                "14": "Protection cooling operation",
+                "15": "Party operation cooling",
+                "16": "Drying heating-up phase",
+                "17": "Drying stationary phase",
+                "18": "Drying cooling-down phase",
+                "19": "Drying end phase",
+                "22": "Cooling operation external/constant request",
+                "23": "Heating operation external/constant request",
+                "26": "Preferential operation SmartGrid"
+            }
         ]
     },
     {
@@ -307,8 +356,30 @@
         ],
         "value": [
             "Statut régulation circuit de chauffage",
-            "U8",
-            0
+            "LIST",
+            0,
+            {
+                "0": "Switched off",
+                "1": "Normal heating operation",
+                "2": "Comfort heating operation 3 = Economy heating operation 4 = Frost operation",
+                "5": "Force acceptance (with force > +50%) 6 = Force throttling (with force < -50%)",
+                "7": "Holiday operation",
+                "8": "Party operation",
+                "9": "Normal cooling operation",
+                "10": "Comfort cooling operation",
+                "11": "Economy cooling operation",
+                "12": "Fault",
+                "13": "Manual operation",
+                "14": "Protection cooling operation",
+                "15": "Party operation cooling",
+                "16": "Drying heating-up phase",
+                "17": "Drying stationary phase",
+                "18": "Drying cooling-down phase",
+                "19": "Drying end phase",
+                "22": "Cooling operation external/constant request",
+                "23": "Heating operation external/constant request",
+                "26": "Preferential operation SmartGrid"
+            }
         ]
     },
     {
@@ -320,7 +391,29 @@
         "value": [
             "Statut régulation circuit de chauffage",
             "U8",
-            0
+            0,
+            {
+                "0": "Switched off",
+                "1": "Normal heating operation",
+                "2": "Comfort heating operation 3 = Economy heating operation 4 = Frost operation",
+                "5": "Force acceptance (with force > +50%) 6 = Force throttling (with force < -50%)",
+                "7": "Holiday operation",
+                "8": "Party operation",
+                "9": "Normal cooling operation",
+                "10": "Comfort cooling operation",
+                "11": "Economy cooling operation",
+                "12": "Fault",
+                "13": "Manual operation",
+                "14": "Protection cooling operation",
+                "15": "Party operation cooling",
+                "16": "Drying heating-up phase",
+                "17": "Drying stationary phase",
+                "18": "Drying cooling-down phase",
+                "19": "Drying end phase",
+                "22": "Cooling operation external/constant request",
+                "23": "Heating operation external/constant request",
+                "26": "Preferential operation SmartGrid"
+            }
         ]
     },
     {
@@ -956,7 +1049,13 @@
         "value": [
             "Sélection fonct. générateur de chaleur",
             "LIST",
-            0
+            0,
+            {
+                "0": "Heat generator off",
+                "1": "Automatic operation",
+                "4": "Manual heating operation",
+                "5": "Manual cooling operation"
+            }
         ]
     },
     {
@@ -1784,7 +1883,13 @@
         "value": [
             "Sélection fonct. générateur de chaleur",
             "LIST",
-            0
+            0,
+            {
+                "0": "Heat generator off",
+                "1": "Automatic operation",
+                "4": "Manual heating operation",
+                "5": "Manual cooling operation"
+            }
         ]
     },
     {
@@ -2263,8 +2368,14 @@
         ],
         "value": [
             "Cooling mode activation",
-            "U8",
-            0
+            "LIST",
+            0,
+            {
+                "0": "Cooling operation switched off",
+                "1": "Cooling operation free, mixer closed",
+                "2": "Cooling operation free, mixer open",
+                "3": "Cooling operation free, mixer controlled"
+            }
         ]
     },
     {
@@ -2383,6 +2494,78 @@
         ],
         "value": [
             "Base point flow temp. cooling char.",
+            "S16",
+            1
+        ]
+    },
+    {
+        "key": [
+            1,
+            0,
+            3032
+        ],
+        "value": [
+            "Control strategy",
+            "U8",
+            0
+        ]
+    },
+    {
+        "key": [
+            1,
+            0,
+            3021
+        ],
+        "value": [
+            "Outside temperature heating limit",
+            "S16",
+            1
+        ]
+    },
+    {
+        "key": [
+            1,
+            0,
+            3054
+        ],
+        "value": [
+            "Normal room temp. cooling oper.",
+            "S16",
+            1
+        ]
+    },
+    {
+        "key": [
+            1,
+            0,
+            2020
+        ],
+        "value": [
+            "Outside average value",
+            "S16",
+            1
+        ]
+    },
+    {
+        "key": [
+            1,
+            0,
+            1087
+        ],
+        "value": [
+            "Cooling valve change-over unit",
+            "U8",
+            0
+        ]
+    },
+    {
+        "key": [
+            1,
+            0,
+            3000
+        ],
+        "value": [
+            "Room protection temperature",
             "S16",
             1
         ]
