@@ -2569,5 +2569,17 @@
             "S16",
             1
         ]
+    },
+    {
+        "key": [
+            1,
+            0,
+            7044
+        ],
+        "value": [
+            "Température minimum cooling",
+            "S16",
+            1
+        ]
     }
 ]
