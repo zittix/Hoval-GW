@@ -23,6 +23,8 @@ broker_password = "hoval"
 # how the addresses are assigned
 polled_data = [
     (0,0,0), # Outside temperature sensor polling
+    (1,0,2),
+    (1,0,1),
 ]
 
 # Polling interval for data (in seconds)
@@ -145,7 +147,7 @@ def parse(msg):
                 }
         else:
             logging.error("Message too small")
-    else:
+    elif len(msg.data) >= 2:
         # Message part
         msg_header = msg.data[0]
         # Check if we are expecting it
