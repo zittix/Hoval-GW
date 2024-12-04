@@ -6,7 +6,8 @@
 import can
 import asyncio
 import logging
-import paho.mqtt.client as mqtt
+from asyncio_mqtt import Client as MQTTClient
+import asyncio_mqtt
 import time
 import json
 
@@ -27,6 +28,12 @@ polled_data = [
     (1,0,1),
 ]
 
+writable_data = [
+    (1,0,1),
+]
+
+MQTT_TOPIC_SUBSCRIBE = 'hoval_write'
+
 # Polling interval for data (in seconds)
 POLLING_INTERVAL = 5
 
@@ -37,6 +44,7 @@ with open('datapoints.json', 'r') as f:
 
 # Remap data_idx so that the keys are tuples
 data_idx = {tuple(e['key']): e['value'] for e in data_idx}
+writable_data = {data_idx[e][0]: e for e in writable_data}
 
 def convert_data(arr, msg):
     if msg[1] == 'U8' or msg[1] == 'U16' or msg[1] == 'U32':
@@ -52,6 +60,32 @@ def convert_data(arr, msg):
         return val
     elif msg[1] == 'STR':
         return arr.decode('utf-8')
+    else:
+        print('Unknown ', msg[1])
+        return None
+
+def convert_value(value, msg):
+    type_to_len = {
+        'U8': 1,
+        'U16': 2,
+        'U32': 4,
+        'S8': 1,
+        'S16': 2,
+        'S32': 4,
+    }
+    if msg[1] == 'U8' or msg[1] == 'U16' or msg[1] == 'U32':
+        val = int.to_bytes(int(value * 10**(msg[2])), type_to_len[msg[1]], byteorder='big', signed=False)
+        return val 
+    elif msg[1] == 'S8' or msg[1] == 'S16' or msg[1] == 'S32':
+        val = int.to_bytes(int(value * 10**(msg[2])), type_to_len[msg[1]], byteorder='big', signed=True)
+        return val
+    elif  msg[1] == 'LIST':
+        if len(msg) > 3 and value in list(msg[3].values()):
+            id = list(msg[3].keys())[list(msg[3].values()).index(value)]
+            return int.to_bytes(id, byteorder='big', signed=False)
+        return int.to_bytes(value, byteorder='big', signed=False)
+    elif msg[1] == 'STR':
+        return value.encode('utf-8')
     else:
         print('Unknown ', msg[1])
         return None
@@ -166,70 +200,99 @@ def parse(msg):
                     return None
     return None
 
-async def main():
-    can0 = can.Bus(channel='can0', bustype='socketcan', receive_own_messages=False)
+async def read_can_bus(can_bus, mqtt_client):
     reader = can.AsyncBufferedReader()
-    logger = can.Logger('canlog.log')
-
-    listeners = [
-        reader,         # AsyncBufferedReader() listener
-        logger          # Regular Listener object
-    ]
-    # Create Notifier with an explicit loop to use for scheduling of callbacks
-    loop = asyncio.get_event_loop()
-    notifier = can.Notifier(can0, listeners, loop=loop)
-
-    client = mqtt.Client("hoval-client")
-    client.username_pw_set(username=broker_username,password=broker_password)
-    try:
-        client.connect(broker)
-    except:
-        time.sleep(30)
-        client.connect(broker)
-
+    #listener = can.Logger()
+    notifier = can.Notifier(can_bus, [reader])
     last_query = time.time()
-
-    while True:
-        polled_data
-        # Wait for next message from AsyncBufferedReader
-        msg = await reader.get_message()
-        parsed = parse(msg)
-        if parsed:
-            logging.info(parsed)
-            ret=client.publish("hoval-gw/"+parsed[0], parsed[1])
-            if ret[0] != 0:
-                connected = False
-                while not connected:
-                    try:
-                        client.connect(broker)
-                        connected = True
-                    except:
-                        time.sleep(5)
-
-
-        if time.time() - last_query >= POLLING_INTERVAL:
-            start_id = 0
-            for i in polled_data:
-                data = query(i)
+    try:
+        while True:
+            # Wait for next message from AsyncBufferedReader
+            msg = await reader.get_message()
+            parsed = parse(msg)
+            if parsed:
+                logging.info(parsed)
                 try:
-                    arb_id = start_id % 0x10
-                    arb_id = (0x1F0 + arb_id) << 16
-                    arb_id += 0x0801 # This is the fixed address?
-                    msg = can.Message(arbitration_id=arb_id,
-                        data=list(data),
-                        is_extended_id=True)
-                    can0.send(msg)
-                    start_id += 1
-                except can.CanError as e:
-                    logging.exception(e)
-            last_query = time.time()
+                    await mqtt_client.publish("hoval-gw/"+parsed[0], parsed[1])
+                except asyncio_mqtt.MqttError as error:
+                    logging.exception(error)
+                    await asyncio.sleep(5)
 
-    # Clean-up
-    notifier.stop()
-    can0.shutdown()
+            if time.time() - last_query >= POLLING_INTERVAL:
+                start_id = 0
+                for i in polled_data:
+                    data = query(i)
+                    try:
+                        arb_id = start_id % 0x10
+                        arb_id = (0x1F0 + arb_id) << 16
+                        arb_id += 0x0801 # This is the fixed address?
+                        msg = can.Message(arbitration_id=arb_id,
+                            data=list(data),
+                            is_extended_id=True)
+                        can_bus.send(msg)
+                        start_id += 1
+                    except can.CanError as e:
+                        logging.exception(e)
+                last_query = time.time()
+    finally:
+        notifier.stop()
+        can_bus.shutdown()
 
-# Get the default event loop
-loop = asyncio.get_event_loop()
-# Run until main coroutine finishes
-loop.run_until_complete(main())
-loop.close()
+async def handle_mqtt_messages(can_bus, mqtt_client):
+    try:
+        async with mqtt_client.filtered_messages(MQTT_TOPIC_SUBSCRIBE) as messages:
+            await mqtt_client.subscribe(MQTT_TOPIC_SUBSCRIBE)
+            start_id = 0
+            async for msg in messages:
+                if msg.topic == MQTT_TOPIC_SUBSCRIBE:
+                    print('Received MQTT message:', msg.payload)
+                    can_data = None
+                    try:
+                        can_data = json.loads(msg.payload)
+                    except:
+                        pass
+                    if can_data:
+                        message_id=can_data['id']
+                        message_value=can_data['value']
+                        if message_id not in writable_data:
+                            print('Data point not writable')
+                            continue
+                        can_id = writable_data[message_id]
+                        converted_value = convert_value(message_value, data_idx[can_id])
+                        if converted_value is None:
+                            print('Unable to convert value')
+                            continue
+                        data = (
+                            int.to_bytes(0x01, 1, byteorder='big') +
+                            int.to_bytes(SET_REQUEST, 1, byteorder='big') +
+                            int.to_bytes(can_id[0], 1, byteorder='big') +
+                            int.to_bytes(can_id[1], 1, byteorder='big') +
+                            int.to_bytes(can_id[2], 2, byteorder='big') +
+                            converted_value
+                        )
+                        try:
+                            arb_id = start_id % 0x10
+                            arb_id = (0x1F0 + arb_id) << 16
+                            arb_id += 0x0801 # This is the fixed address?
+                            msg = can.Message(arbitration_id=arb_id,
+                                data=list(data),
+                                is_extended_id=True)
+                            can_bus.send(msg)
+                            start_id += 1
+                        except can.CanError as e:
+                            logging.exception(e)
+    except asyncio_mqtt.MqttError as e:
+        logging.exception('Error in handle_mqtt_messages')
+
+
+async def main():
+    mqtt_client = MQTTClient(broker, username=broker_username,password=broker_password)
+    can_bus = can.Bus(channel='can0', bustype='socketcan', receive_own_messages=False)
+    async with mqtt_client:
+        await asyncio.gather(
+            read_can_bus(can_bus, mqtt_client),
+            handle_mqtt_messages(can_bus, mqtt_client)
+        )
+
+if __name__ == '__main__':
+    asyncio.run(main())

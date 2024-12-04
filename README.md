@@ -25,7 +25,7 @@ Setup required
     ```
 6. Install needed python packages:
     ```
-    pip3 install python-can paho-mqtt
+    pip3 install python-can paho-mqtt==1.6.1 asyncio-mqtt
     ```
    
 7. Setup the CAN adpater to be up at boot time with 50kbps that matches Hoval CAN bus speed:
