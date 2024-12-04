@@ -212,11 +212,7 @@ async def read_can_bus(can_bus, mqtt_client):
             parsed = parse(msg)
             if parsed:
                 logging.info(parsed)
-                try:
-                    await mqtt_client.publish("hoval-gw/"+parsed[0], parsed[1])
-                except asyncio_mqtt.MqttError as error:
-                    logging.exception(error)
-                    await asyncio.sleep(5)
+                await mqtt_client.publish("hoval-gw/"+parsed[0], parsed[1])
 
             if time.time() - last_query >= POLLING_INTERVAL:
                 start_id = 0
@@ -236,63 +232,65 @@ async def read_can_bus(can_bus, mqtt_client):
                 last_query = time.time()
     finally:
         notifier.stop()
-        can_bus.shutdown()
 
 async def handle_mqtt_messages(can_bus, mqtt_client):
-    try:
-        async with mqtt_client.filtered_messages(MQTT_TOPIC_SUBSCRIBE) as messages:
-            await mqtt_client.subscribe(MQTT_TOPIC_SUBSCRIBE)
-            start_id = 0
-            async for msg in messages:
-                if msg.topic == MQTT_TOPIC_SUBSCRIBE:
-                    print('Received MQTT message:', msg.payload)
-                    can_data = None
+    async with mqtt_client.filtered_messages(MQTT_TOPIC_SUBSCRIBE) as messages:
+        await mqtt_client.subscribe(MQTT_TOPIC_SUBSCRIBE)
+        start_id = 0
+        async for msg in messages:
+            if msg.topic == MQTT_TOPIC_SUBSCRIBE:
+                print('Received MQTT message:', msg.payload)
+                can_data = None
+                try:
+                    can_data = json.loads(msg.payload)
+                except:
+                    pass
+                if can_data:
+                    message_id=can_data['id']
+                    message_value=can_data['value']
+                    if message_id not in writable_data:
+                        print('Data point not writable')
+                        continue
+                    can_id = writable_data[message_id]
+                    converted_value = convert_value(message_value, data_idx[can_id])
+                    if converted_value is None:
+                        print('Unable to convert value')
+                        continue
+                    data = (
+                        int.to_bytes(0x01, 1, byteorder='big') +
+                        int.to_bytes(SET_REQUEST, 1, byteorder='big') +
+                        int.to_bytes(can_id[0], 1, byteorder='big') +
+                        int.to_bytes(can_id[1], 1, byteorder='big') +
+                        int.to_bytes(can_id[2], 2, byteorder='big') +
+                        converted_value
+                    )
                     try:
-                        can_data = json.loads(msg.payload)
-                    except:
-                        pass
-                    if can_data:
-                        message_id=can_data['id']
-                        message_value=can_data['value']
-                        if message_id not in writable_data:
-                            print('Data point not writable')
-                            continue
-                        can_id = writable_data[message_id]
-                        converted_value = convert_value(message_value, data_idx[can_id])
-                        if converted_value is None:
-                            print('Unable to convert value')
-                            continue
-                        data = (
-                            int.to_bytes(0x01, 1, byteorder='big') +
-                            int.to_bytes(SET_REQUEST, 1, byteorder='big') +
-                            int.to_bytes(can_id[0], 1, byteorder='big') +
-                            int.to_bytes(can_id[1], 1, byteorder='big') +
-                            int.to_bytes(can_id[2], 2, byteorder='big') +
-                            converted_value
-                        )
-                        try:
-                            arb_id = start_id % 0x10
-                            arb_id = (0x1F0 + arb_id) << 16
-                            arb_id += 0x0801 # This is the fixed address?
-                            msg = can.Message(arbitration_id=arb_id,
-                                data=list(data),
-                                is_extended_id=True)
-                            can_bus.send(msg)
-                            start_id += 1
-                        except can.CanError as e:
-                            logging.exception(e)
-    except asyncio_mqtt.MqttError as e:
-        logging.exception('Error in handle_mqtt_messages')
-
+                        arb_id = start_id % 0x10
+                        arb_id = (0x1F0 + arb_id) << 16
+                        arb_id += 0x0801 # This is the fixed address?
+                        msg = can.Message(arbitration_id=arb_id,
+                            data=list(data),
+                            is_extended_id=True)
+                        can_bus.send(msg)
+                        start_id += 1
+                    except can.CanError as e:
+                        logging.exception(e)
 
 async def main():
-    mqtt_client = MQTTClient(broker, username=broker_username,password=broker_password)
-    can_bus = can.Bus(channel='can0', bustype='socketcan', receive_own_messages=False)
-    async with mqtt_client:
-        await asyncio.gather(
-            read_can_bus(can_bus, mqtt_client),
-            handle_mqtt_messages(can_bus, mqtt_client)
-        )
+    while True:
+        try:
+            mqtt_client = MQTTClient(broker, username=broker_username,password=broker_password)
+            can_bus = can.Bus(channel='can0', bustype='socketcan', receive_own_messages=False)
+            async with mqtt_client:
+                await asyncio.gather(
+                    read_can_bus(can_bus, mqtt_client),
+                    handle_mqtt_messages(can_bus, mqtt_client)
+            )
+        except:
+            logging.exception('Error in main loop')
+        finally:
+            can_bus.shutdown()
+            await asyncio.sleep(2)
 
 if __name__ == '__main__':
     asyncio.run(main())
