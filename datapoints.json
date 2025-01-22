@@ -2581,5 +2581,17 @@
             "S16",
             1
         ]
+    },
+    {
+        "key": [
+            1,
+            0,
+            3007
+        ],
+        "value": [
+            "Compensation room temperature",
+            "S16",
+            1
+        ]
     }
 ]
