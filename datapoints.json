@@ -327,7 +327,9 @@
             {
                 "0": "Switched off",
                 "1": "Normal heating operation",
-                "2": "Comfort heating operation 3 = Economy heating operation 4 = Frost operation",
+                "2": "Comfort heating operation",
+		"3": "Economy heating operation",
+		"4": "Frost operation",
                 "5": "Force acceptance (with force > +50%) 6 = Force throttling (with force < -50%)",
                 "7": "Holiday operation",
                 "8": "Party operation",
