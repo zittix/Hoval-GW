@@ -78,30 +78,50 @@ def slugify(name):
     return slug or 'point'
 
 def _guess_unit(name, point_type):
-    """Best-effort unit detection from the datapoint name."""
-    if point_type in ('STR', 'LIST'):
-        return None
-    n = name.lower()
-    if 'temp' in n or 'sonde' in n or '°c' in n:
-        return '°C'
-    if 'pression' in n or 'pressure' in n:
-        return 'bar'
-    if 'humid' in n:
-        return '%'
-    if 'puissance' in n or 'power' in n:
-        return 'W'
-    if 'debit' in n or 'flow' in n or 'débit' in n:
-        return 'L/min'
-    if 'heure' in n or 'hours' in n or 'runtime' in n:
-        return 'h'
-    if 'vitesse' in n or 'speed' in n or 'rpm' in n:
-        return 'rpm'
+    # Kept for backwards-compat; unit now comes from the datapoint definition
+    # itself (datapoints.json). This helper is no longer called.
     return None
+
+# Map raw unit strings (as they appear in datapoints.json / db.json) to
+# Home Assistant device_class values when applicable.
+_UNIT_TO_DEVICE_CLASS = {
+    '°C': 'temperature',
+    '°F': 'temperature',
+    'K':   'temperature',
+    'bar': 'pressure',
+    'mbar': 'pressure',
+    'Pa':  'pressure',
+    'hPa': 'pressure',
+    'kPa': 'pressure',
+    '%':   None,        # could be humidity/battery/etc — leave unset
+    'W':   'power',
+    'kW':  'power',
+    'Wh':  'energy',
+    'kWh': 'energy',
+    'MWh': 'energy',
+    'V':   'voltage',
+    'mV':  'voltage',
+    'A':   'current',
+    'mA':  'current',
+    'Hz':  'frequency',
+    'rpm': None,
+    'h':   'duration',
+    'min': 'duration',
+    's':   'duration',
+    'l/min': 'volume_flow_rate',
+    'L/min': 'volume_flow_rate',
+    'm³/h': 'volume_flow_rate',
+    'l':   'volume',
+    'L':   'volume',
+    'm³':  'volume',
+}
 
 def build_discovery_payload(key, point):
     """Build a Home Assistant MQTT discovery payload for a datapoint."""
     name = point[0]
     point_type = point[1]
+    unit = point[3] if len(point) > 3 else None
+    options = point[4] if len(point) > 4 else None
     slug = slugify(name)
     state_topic = f"{MQTT_STATE_PREFIX}/{name}"
     payload = {
@@ -111,22 +131,19 @@ def build_discovery_payload(key, point):
         "object_id": f"{HA_NODE_ID}_{slug}",
         "device": HA_DEVICE,
     }
-    unit = _guess_unit(name, point_type)
-    if unit:
+    if unit and point_type != 'LIST':
         payload["unit_of_measurement"] = unit
         payload["state_class"] = "measurement"
-        if unit == '°C':
-            payload["device_class"] = "temperature"
-        elif unit == 'bar':
-            payload["device_class"] = "pressure"
-        elif unit == '%':
-            payload["device_class"] = "humidity"
-        elif unit == 'W':
-            payload["device_class"] = "power"
-    if point_type == 'LIST' and len(point) > 3 and isinstance(point[3], dict):
+        # cumulative counters (energy/volume) are better tagged total_increasing
+        if unit in ('Wh', 'kWh', 'MWh', 'l', 'L', 'm³'):
+            payload["state_class"] = "total_increasing"
+        dc = _UNIT_TO_DEVICE_CLASS.get(unit)
+        if dc:
+            payload["device_class"] = dc
+    if point_type == 'LIST' and isinstance(options, dict):
         # Values published are the mapped string labels -> expose as enum
         payload["device_class"] = "enum"
-        payload["options"] = list(point[3].values())
+        payload["options"] = list(options.values())
         payload.pop("state_class", None)
     return payload
 
@@ -163,8 +180,8 @@ def convert_data(arr, msg):
         return val / 10**(msg[2])
     elif  msg[1] == 'LIST':
         val = int.from_bytes(arr, byteorder='big', signed=False)
-        if len(msg) > 3 and str(val) in msg[3]:
-            return msg[3][str(val)]
+        if len(msg) > 4 and isinstance(msg[4], dict) and str(val) in msg[4]:
+            return msg[4][str(val)]
         return val
     elif msg[1] == 'STR':
         return arr.decode('utf-8')
@@ -188,8 +205,8 @@ def convert_value(value, msg):
         val = int.to_bytes(int(value * 10**(msg[2])), type_to_len[msg[1]], byteorder='big', signed=True)
         return val
     elif  msg[1] == 'LIST':
-        if len(msg) > 3 and value in list(msg[3].values()):
-            id = list(msg[3].keys())[list(msg[3].values()).index(value)]
+        if len(msg) > 4 and isinstance(msg[4], dict) and value in list(msg[4].values()):
+            id = list(msg[4].keys())[list(msg[4].values()).index(value)]
             return int.to_bytes(id, byteorder='big', signed=False)
         return int.to_bytes(value, byteorder='big', signed=False)
     elif msg[1] == 'STR':
