@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # This file is just a sample file that does:
 # 1) Open CAN bus can0 on the device (for example a raspberry PI using socketcan)
 # 2) Listening for simple message coming from Hoval heater TTE-WEZ
@@ -10,6 +11,8 @@ from asyncio_mqtt import Client as MQTTClient
 import asyncio_mqtt
 import time
 import json
+import re
+import unicodedata
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -26,6 +29,8 @@ polled_data = [
     (0,0,0), # Outside temperature sensor polling
     (1,0,2),
     (1,0,1),
+    (1,0,1002),
+    (1,0,2051),
 ]
 
 writable_data = [
@@ -45,6 +50,109 @@ with open('datapoints.json', 'r') as f:
 # Remap data_idx so that the keys are tuples
 data_idx = {tuple(e['key']): e['value'] for e in data_idx}
 writable_data = {data_idx[e][0]: e for e in writable_data}
+
+# ---------------------------------------------------------------------------
+# Home Assistant MQTT discovery
+# ---------------------------------------------------------------------------
+HA_DISCOVERY_PREFIX = 'homeassistant'
+HA_NODE_ID = 'hoval_gw'
+MQTT_STATE_PREFIX = 'hoval-gw'
+
+# Device block sent with every discovery message so HA groups all entities
+# under a single "Hoval Gateway" device.
+HA_DEVICE = {
+    "identifiers": [HA_NODE_ID],
+    "name": "Hoval Gateway",
+    "manufacturer": "Hoval",
+    "model": "TTE-GW (CAN)",
+}
+
+def slugify(name):
+    """Return an ASCII slug usable as an MQTT object_id / unique_id."""
+    # Strip accents
+    normalized = unicodedata.normalize('NFKD', name)
+    ascii_name = normalized.encode('ascii', 'ignore').decode('ascii')
+    ascii_name = ascii_name.lower()
+    # Replace anything not [a-z0-9] with underscore
+    slug = re.sub(r'[^a-z0-9]+', '_', ascii_name).strip('_')
+    return slug or 'point'
+
+def _guess_unit(name, point_type):
+    """Best-effort unit detection from the datapoint name."""
+    if point_type in ('STR', 'LIST'):
+        return None
+    n = name.lower()
+    if 'temp' in n or 'sonde' in n or '°c' in n:
+        return '°C'
+    if 'pression' in n or 'pressure' in n:
+        return 'bar'
+    if 'humid' in n:
+        return '%'
+    if 'puissance' in n or 'power' in n:
+        return 'W'
+    if 'debit' in n or 'flow' in n or 'débit' in n:
+        return 'L/min'
+    if 'heure' in n or 'hours' in n or 'runtime' in n:
+        return 'h'
+    if 'vitesse' in n or 'speed' in n or 'rpm' in n:
+        return 'rpm'
+    return None
+
+def build_discovery_payload(key, point):
+    """Build a Home Assistant MQTT discovery payload for a datapoint."""
+    name = point[0]
+    point_type = point[1]
+    slug = slugify(name)
+    state_topic = f"{MQTT_STATE_PREFIX}/{name}"
+    payload = {
+        "name": name,
+        "state_topic": state_topic,
+        "unique_id": f"{HA_NODE_ID}_{key[0]}_{key[1]}_{key[2]}_{slug}",
+        "object_id": f"{HA_NODE_ID}_{slug}",
+        "device": HA_DEVICE,
+    }
+    unit = _guess_unit(name, point_type)
+    if unit:
+        payload["unit_of_measurement"] = unit
+        payload["state_class"] = "measurement"
+        if unit == '°C':
+            payload["device_class"] = "temperature"
+        elif unit == 'bar':
+            payload["device_class"] = "pressure"
+        elif unit == '%':
+            payload["device_class"] = "humidity"
+        elif unit == 'W':
+            payload["device_class"] = "power"
+    if point_type == 'LIST' and len(point) > 3 and isinstance(point[3], dict):
+        # Values published are the mapped string labels -> expose as enum
+        payload["device_class"] = "enum"
+        payload["options"] = list(point[3].values())
+        payload.pop("state_class", None)
+    return payload
+
+# Keys (function_group, function_number, datapoint) we've already announced
+# to Home Assistant during this process. Discovery is published lazily the
+# first time we actually see data for a datapoint, so HA never shows entities
+# that the heater never reports.
+_ha_announced = set()
+
+async def announce_ha_entity(mqtt_client, key):
+    """Publish the HA discovery config for ``key`` once."""
+    if key in _ha_announced:
+        return
+    point = data_idx.get(key)
+    if not point:
+        return
+    try:
+        slug = slugify(point[0])
+        unique_suffix = f"{key[0]}_{key[1]}_{key[2]}_{slug}"
+        topic = f"{HA_DISCOVERY_PREFIX}/sensor/{HA_NODE_ID}/{unique_suffix}/config"
+        payload = build_discovery_payload(key, point)
+        await mqtt_client.publish(topic, json.dumps(payload), retain=True)
+        _ha_announced.add(key)
+        logging.info("Announced HA entity for %s", point[0])
+    except Exception:
+        logging.exception("Failed to publish discovery for %s", point)
 
 def convert_data(arr, msg):
     if msg[1] == 'U8' or msg[1] == 'U16' or msg[1] == 'U32':
@@ -114,7 +222,7 @@ def interpret_message(data):
             point = data_idx[idp]
             out = convert_data(data[5:], point)
             if out:
-                return (point[0], out)
+                return (idp, point[0], out)
         else:
             logging.error("No known point found for (%d,%d,%d), len %d", function_group, function_number, datapoint, len(data))
     elif data[0] == SET_REQUEST:
@@ -215,7 +323,12 @@ async def read_can_bus(can_bus, mqtt_client):
             parsed = parse(msg)
             if parsed:
                 logging.info(parsed)
-                await mqtt_client.publish("hoval-gw/"+parsed[0], parsed[1])
+                key, name, value = parsed
+                # Announce the entity to Home Assistant the first time we
+                # actually see data for it (retained config), then publish
+                # the state on the existing topic.
+                await announce_ha_entity(mqtt_client, key)
+                await mqtt_client.publish(f"{MQTT_STATE_PREFIX}/"+name, value)
 
             if time.time() - last_query >= POLLING_INTERVAL:
                 start_id = 0
