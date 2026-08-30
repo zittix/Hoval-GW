@@ -21,6 +21,9 @@ broker = '192.168.3.7'
 broker_username = "hoval"
 broker_password = "hoval"
 
+# Plant route observed in every local capture; protocol framing is added below.
+CAN_REQUEST_ROUTE = 0x00200801
+
 # If you want data to be periodically queried, add them to below list
 # IDs comes from below list
 # Warning: for now the device address to poll is fixed since I don't know yet
@@ -31,6 +34,7 @@ polled_data = [
     (1,0,1),
     (1,0,1002),
     (1,0,2051),
+    (1,0,7044),
 ]
 
 writable_data = [
@@ -147,6 +151,24 @@ def build_discovery_payload(key, point):
         payload.pop("state_class", None)
     return payload
 
+def schedule_state_topic(object_id):
+    return f"{MQTT_STATE_PREFIX}/schedule/{object_id:04X}"
+
+def build_schedule_discovery_payload(key):
+    object_id = key[2]
+    kind, name = _schedule_object_info(object_id)
+    state_topic = schedule_state_topic(object_id)
+    return {
+        "name": name,
+        "state_topic": state_topic,
+        "value_template": "{{ value_json.name or value_json.object_name }}",
+        "json_attributes_topic": state_topic,
+        "unique_id": f"{HA_NODE_ID}_schedule_{object_id:04x}",
+        "object_id": f"{HA_NODE_ID}_{slugify(name)}",
+        "icon": "mdi:calendar-week" if kind.endswith('_week') else "mdi:calendar-clock",
+        "device": HA_DEVICE,
+    }
+
 # Keys (function_group, function_number, datapoint) we've already announced
 # to Home Assistant during this process. Discovery is published lazily the
 # first time we actually see data for a datapoint, so HA never shows entities
@@ -158,18 +180,24 @@ async def announce_ha_entity(mqtt_client, key):
     if key in _ha_announced:
         return
     point = data_idx.get(key)
-    if not point:
-        return
     try:
-        slug = slugify(point[0])
-        unique_suffix = f"{key[0]}_{key[1]}_{key[2]}_{slug}"
+        if key[0] == OBJECT_SERVICE:
+            payload = build_schedule_discovery_payload(key)
+            unique_suffix = f"schedule_{key[2]:04x}"
+            name = payload["name"]
+        elif point:
+            slug = slugify(point[0])
+            unique_suffix = f"{key[0]}_{key[1]}_{key[2]}_{slug}"
+            payload = build_discovery_payload(key, point)
+            name = point[0]
+        else:
+            return
         topic = f"{HA_DISCOVERY_PREFIX}/sensor/{HA_NODE_ID}/{unique_suffix}/config"
-        payload = build_discovery_payload(key, point)
         await mqtt_client.publish(topic, json.dumps(payload), retain=True)
         _ha_announced.add(key)
-        logging.info("Announced HA entity for %s", point[0])
+        logging.info("Announced HA entity for %s", name)
     except Exception:
-        logging.exception("Failed to publish discovery for %s", point)
+        logging.exception("Failed to publish discovery for %s", key)
 
 def convert_data(arr, msg):
     if msg[1] == 'U8' or msg[1] == 'U16' or msg[1] == 'U32':
@@ -184,7 +212,9 @@ def convert_data(arr, msg):
             return msg[4][str(val)]
         return val
     elif msg[1] == 'STR':
-        return arr.decode('utf-8')
+        return arr.rstrip(b'\0').decode('latin-1')
+    elif msg[1] == 'RAW':
+        return arr.hex().upper()
     else:
         print('Unknown ', msg[1])
         return None
@@ -210,15 +240,10 @@ def convert_value(value, msg):
             return int.to_bytes(id, byteorder='big', signed=False)
         return int.to_bytes(value, byteorder='big', signed=False)
     elif msg[1] == 'STR':
-        return value.encode('utf-8')
+        return value.encode('latin-1')
     else:
         print('Unknown ', msg[1])
         return None
-
-def parse_can_id(id):
-    # First 2 bytes, messages prio & offsets
-    # Last 2 bytes device type and device ID??
-    return (id >> 16, (id >> 8) & 0xff, id & 0xff)
 
 pending_msg = {}
 
@@ -226,40 +251,275 @@ devices = {}
 
 REQUEST = 0x40
 ANSWER = 0x42
+SET_ANSWER = 0x44
 SET_REQUEST = 0x46
+OBJECT_SERVICE = 0x62
+
+CAN_ROUTE_MASK = 0x003FFFFF
+CAN_LAST_FRAME = 0x00800000
+CAN_MULTI_FRAME = 0x1F400000
+CAN_SINGLE_FRAME = 0x1FC00000
+
+_WEEKDAYS = ('monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday')
+# Schedule object IDs observed in candump_with_schedule.log's 0x62 object-service traffic.
+SCHEDULE_OBJECTS = (
+    0x3D10, 0x3D11,  # Heating 1 week programmes 1-2
+    0x3D30, 0x3D31,  # Hot-water week programmes 1-2
+    0x3E10, 0x3E11, 0x3E12, 0x3E13, 0x3E14,  # Heating 1 day programmes 1-5
+    0x3E30, 0x3E31, 0x3E32, 0x3E33, 0x3E34,  # Hot-water day programmes 1-5
+)
+
+def _schedule_field_name(kind, tag):
+    if tag == 0xFA0F:
+        return 'name'
+    if kind.endswith('_week') and 0xFA00 <= tag <= 0xFA06:
+        return f'{_WEEKDAYS[tag - 0xFA00]} programme id'
+    if kind.endswith('_week') and tag == 0xFA07:
+        return 'reserved'
+    if kind.endswith('_day') and 0xFA14 <= tag <= 0xFA1F:
+        return f'point {(tag - 0xFA14) // 2 + 1} {"time" if tag % 2 == 0 else "temperature"}'
+    if kind == 'heating_day' and 0xFA28 <= tag <= 0xFA2D:
+        return f'point {tag - 0xFA28 + 1} cooling temperature'
+    return f'unknown field 0x{tag:04X}'
+
+def _schedule_object_info(object_id):
+    ranges = (
+        (0x3D10, 0x3D11, 'heating_week', 'Heating 1 - Week programme'),
+        (0x3D30, 0x3D31, 'hot_water_week', 'Hot water - Week programme'),
+        (0x3E10, 0x3E14, 'heating_day', 'Heating 1 - Day programme'),
+        (0x3E30, 0x3E34, 'hot_water_day', 'Hot water - Day programme'),
+    )
+    for first, last, kind, label in ranges:
+        if first <= object_id <= last:
+            return kind, f'{label} {object_id - first + 1}'
+    raise ValueError(f'Unknown schedule object 0x{object_id:04X}')
+
+def _schedule_field_value(kind, tag, raw):
+    if tag == 0xFA0F:
+        return raw.rstrip(b'\0').decode('latin-1')
+    if len(raw) != 1:
+        return raw.hex().upper()
+    value = raw[0]
+    if kind.endswith('_day') and 0xFA14 <= tag <= 0xFA1F:
+        if tag % 2 == 0:
+            minutes = value * 15
+            return f'{minutes // 60:02d}:{minutes % 60:02d}'
+        return value / 2
+    if kind == 'heating_day' and 0xFA28 <= tag <= 0xFA2D:
+        return value / 2
+    return value
+
+def _parse_schedule_fields(object_id, data, field_count):
+    kind, _ = _schedule_object_info(object_id)
+    fields = {}
+    offset = 0
+    for _ in range(field_count):
+        if offset + 3 > len(data):
+            raise ValueError('Truncated schedule field')
+        tag = int.from_bytes(data[offset:offset + 2], 'big')
+        offset += 2
+        length = data[offset] if tag == 0xFA0F else 1
+        if tag == 0xFA0F:
+            offset += 1
+        if offset + length > len(data):
+            raise ValueError(f'Truncated schedule field 0x{tag:04X}')
+        raw = data[offset:offset + length]
+        fields[tag] = _schedule_field_value(kind, tag, raw)
+        offset += length
+    if offset != len(data):
+        raise ValueError(f'Unexpected trailing schedule data ({len(data) - offset} bytes)')
+    return fields
+
+def _schedule_state(object_id, fields):
+    kind, object_name = _schedule_object_info(object_id)
+    state = {
+        'object_id': f'{object_id:04X}',
+        'object_name': object_name,
+        'kind': kind,
+        'name': fields.get(0xFA0F),
+        'fields': {f'{tag:04X}': value for tag, value in fields.items()},
+        'field_names': {f'{tag:04X}': _schedule_field_name(kind, tag) for tag in fields},
+    }
+    if kind.endswith('_week'):
+        state['days'] = {
+            day: fields[0xFA00 + index]
+            for index, day in enumerate(_WEEKDAYS)
+            if 0xFA00 + index in fields
+        }
+    else:
+        points = []
+        for index in range(6):
+            time_tag = 0xFA14 + index * 2
+            temperature_tag = time_tag + 1
+            if time_tag not in fields:
+                continue
+            point = {'time': fields[time_tag], 'temperature': fields.get(temperature_tag)}
+            cooling_tag = 0xFA28 + index
+            if cooling_tag in fields:
+                point['cooling_temperature'] = fields[cooling_tag]
+            points.append(point)
+        state['points'] = points
+    return state
+
+def decode_schedule_datapoint(data):
+    """Decode the normal read/set envelope used for individual schedule fields."""
+    data = bytes(data)
+    if len(data) < 5 or data[0] not in (REQUEST, ANSWER, SET_ANSWER, SET_REQUEST):
+        return None
+    object_id = int.from_bytes(data[1:3], 'big')
+    try:
+        kind, object_name = _schedule_object_info(object_id)
+    except ValueError:
+        return None
+    operation = {
+        REQUEST: 'field_read',
+        ANSWER: 'field_read_response',
+        SET_REQUEST: 'field_set',
+        SET_ANSWER: 'field_set_ack',
+    }[data[0]]
+    if operation in ('field_read', 'field_set_ack') and len(data) != 5:
+        raise ValueError('Invalid schedule datapoint request or acknowledgement')
+    if operation in ('field_read_response', 'field_set') and len(data) < 6:
+        raise ValueError('Invalid schedule datapoint value')
+    tag = int.from_bytes(data[3:5], 'big')
+    result = {
+        'operation': operation,
+        'object_id': f'{object_id:04X}',
+        'object_name': object_name,
+        'field': f'{tag:04X}',
+        'field_name': _schedule_field_name(kind, tag),
+    }
+    if len(data) > 5:
+        result['value'] = _schedule_field_value(kind, tag, data[5:])
+    return result
+
+def decode_object_service(data):
+    """Decode every 0x62 object-service message observed in the captures."""
+    data = bytes(data)
+    if len(data) < 2 or data[0] != OBJECT_SERVICE:
+        raise ValueError('Not an object-service message')
+    operation = data[1]
+
+    if operation == 0x01:
+        if len(data) != 4:
+            raise ValueError('Invalid datapoint catalogue request')
+        return {'operation': 'catalogue_read', 'function_group': data[2], 'function_number': data[3]}
+
+    if operation == 0x81:
+        if len(data) < 7 or len(data) != 7 + data[6] * 3:
+            raise ValueError('Invalid datapoint catalogue response')
+        function_group, function_number = data[2:4]
+        entries = []
+        for offset in range(7, len(data), 3):
+            datapoint = int.from_bytes(data[offset:offset + 2], 'big')
+            entry = {'id': datapoint, 'descriptor': f'{data[offset + 2]:02X}'}
+            definition = data_idx.get((function_group, function_number, datapoint))
+            if definition:
+                entry.update(name=definition[0], type=definition[1])
+            else:
+                entry.update(
+                    name=f'Unknown datapoint {function_group}/{function_number}/{datapoint}',
+                    type='RAW',
+                )
+            entries.append(entry)
+        return {
+            'operation': 'catalogue_response',
+            'function_group': function_group,
+            'function_number': function_number,
+            'offset': int.from_bytes(data[4:6], 'big'),
+            'entries': entries,
+        }
+
+    if len(data) < 4:
+        raise ValueError('Truncated schedule message')
+    object_id = int.from_bytes(data[2:4], 'big')
+    kind, object_name = _schedule_object_info(object_id)
+    result = {'object_id': f'{object_id:04X}', 'object_name': object_name, 'kind': kind}
+
+    if operation == 0x00:
+        if len(data) != 8:
+            raise ValueError('Invalid schedule read request')
+        result.update(operation='read', selector=data[4:].hex().upper())
+    elif operation == 0x80:
+        if len(data) < 7:
+            raise ValueError('Invalid schedule response')
+        fields = _parse_schedule_fields(object_id, data[7:], data[6])
+        result.update(operation='read_response', selector=data[4:6].hex().upper(), schedule=_schedule_state(object_id, fields))
+    elif operation == 0x03:
+        if len(data) != 4:
+            raise ValueError('Invalid schedule transaction start')
+        result['operation'] = 'transaction_start'
+    elif operation == 0x04:
+        if len(data) != 5:
+            raise ValueError('Invalid schedule commit')
+        result.update(operation='commit', value=data[4])
+    elif operation == 0x05:
+        if len(data) < 7 or len(data) != 7 + data[6]:
+            raise ValueError('Invalid schedule field write')
+        tag = int.from_bytes(data[4:6], 'big')
+        result.update(
+            operation='field_write',
+            field=f'{tag:04X}',
+            field_name=_schedule_field_name(kind, tag),
+            value=_schedule_field_value(kind, tag, data[7:]),
+        )
+    elif operation == 0x09:
+        if len(data) < 5:
+            raise ValueError('Invalid schedule replacement')
+        fields = _parse_schedule_fields(object_id, data[5:], data[4])
+        result.update(operation='replace', schedule=_schedule_state(object_id, fields))
+    elif operation in (0x83, 0x84):
+        if len(data) != 5:
+            raise ValueError('Invalid schedule acknowledgement')
+        result.update(operation='transaction_ack' if operation == 0x83 else 'commit_ack', status=data[4])
+    elif operation == 0x85:
+        if len(data) != 7:
+            raise ValueError('Invalid schedule field acknowledgement')
+        tag = int.from_bytes(data[4:6], 'big')
+        result.update(operation='field_ack', field=f'{tag:04X}',
+                      field_name=_schedule_field_name(kind, tag), status=data[6])
+    elif operation == 0x89:
+        if len(data) < 5 or len(data) != 5 + data[4]:
+            raise ValueError('Invalid schedule replacement acknowledgement')
+        result.update(operation='replace_ack', statuses=list(data[5:]))
+    else:
+        raise ValueError(f'Unknown object-service operation 0x{operation:02X}')
+    return result
 
 def interpret_message(data):
-    if data[0] == ANSWER: # Answer from request
+    if not data:
+        return None
+    schedule_datapoint = decode_schedule_datapoint(data)
+    if schedule_datapoint:
+        logging.debug('Schedule datapoint operation: %s', schedule_datapoint['operation'])
+    elif data[0] == OBJECT_SERVICE:
+        decoded = decode_object_service(data)
+        if decoded['operation'] == 'read_response':
+            schedule = decoded['schedule']
+            return ((OBJECT_SERVICE, 0, int(schedule['object_id'], 16)),
+                    schedule['object_name'], json.dumps(schedule, ensure_ascii=False))
+        logging.debug('Object service operation: %s', decoded['operation'])
+    elif data[0] == ANSWER: # Answer from request
         # Data point
         function_group = data[1]
         function_number = data[2]
         datapoint = int.from_bytes(data[3:5], byteorder='big', signed=False)
         idp = (function_group, function_number, datapoint)
-        if idp in data_idx:
-            point = data_idx[idp]
-            out = convert_data(data[5:], point)
-            if out:
-                return (idp, point[0], out)
-        else:
-            logging.error("No known point found for (%d,%d,%d), len %d", function_group, function_number, datapoint, len(data))
-    elif data[0] == SET_REQUEST:
+        point = data_idx.get(idp)
+        if not point:
+            name = f'Unknown datapoint {function_group}/{function_number}/{datapoint}'
+            logging.warning('%s, preserving %d raw bytes', name, len(data) - 5)
+            return (idp, name, data[5:].hex().upper())
+        out = convert_data(data[5:], point)
+        if out is not None:
+            return (idp, point[0], out)
+    elif data[0] in (REQUEST, SET_REQUEST, SET_ANSWER):
         function_group = data[1]
         function_number = data[2]
         datapoint = int.from_bytes(data[3:5], byteorder='big', signed=False)
         idp = (function_group, function_number, datapoint)
-        if idp in data_idx:
-            logging.debug("Setting data %s", data_idx[idp][0])
-        else:
-            logging.debug("Setting data %s", idp)
-    elif data[0] == REQUEST:
-        function_group = data[1]
-        function_number = data[2]
-        datapoint = int.from_bytes(data[3:5], byteorder='big', signed=False)
-        idp = (function_group, function_number, datapoint)
-        if idp in data_idx:
-            logging.debug("Requesting %s", data_idx[idp][0])
-        else:
-            logging.debug("Requesting %s", idp)
+        action = {REQUEST: 'Requesting', SET_REQUEST: 'Setting', SET_ANSWER: 'Set acknowledged'}[data[0]]
+        logging.debug('%s %s', action, data_idx.get(idp, [idp])[0])
     else:
         logging.debug("Unknown op code: 0x%02x", data[0])
 
@@ -275,19 +535,75 @@ def query(id):
     )
     return data
 
+def query_schedule(object_id):
+    _schedule_object_info(object_id)
+    return (
+        b'\x01'  # TopTronic message marker consumed by build_can_frames()
+        + b'\x62\x00'  # Object service (0x62), read operation (0x00)
+        + object_id.to_bytes(2, 'big')  # 16-bit schedule object ID
+        + b'\x00\x00\xff\xff'  # Captured whole-object selector; inner semantics unknown
+    )
+
+def toptronic_crc(data):
+    """Return the TopTronic multi-frame CRC-16."""
+    crc = 0x600D  # Reflected form of init=0xB006, poly=0x1021.
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0x8408 if crc & 1 else 0)
+    return crc
+
 def verify_crc(msg_data):
-    pass
+    return len(msg_data) >= 2 and toptronic_crc(msg_data[:-2]) == int.from_bytes(msg_data[-2:], 'big')
+
+def build_can_frames(arbitration_id, data, message_header):
+    """Split a TopTronic request into one or more CAN frames."""
+    data = bytes(data)
+    if not data or data[0] != 0x01:
+        raise ValueError("TopTronic messages must start with 0x01")
+    if arbitration_id >> 24 != 0x1f:
+        raise ValueError("TopTronic arbitration IDs must start with 0x1F")
+    route_id = arbitration_id & CAN_ROUTE_MASK
+    if len(data) <= 8:
+        return [(CAN_SINGLE_FRAME | route_id, data)]
+    if not 0 <= message_header <= 0xff:
+        raise ValueError("Multi-frame message header must fit in one byte")
+
+    payload = data[1:]
+    payload += toptronic_crc(payload).to_bytes(2, 'big')
+    frame_count = 1 + (max(0, len(payload) - 6) + 6) // 7
+    if frame_count > 31:
+        raise ValueError("TopTronic message is too large")
+
+    frames = [(CAN_MULTI_FRAME | route_id,
+               bytes([(frame_count << 3) | 0x01, message_header]) + payload[:6])]
+    for frame_index, offset in enumerate(range(6, len(payload), 7), 1):
+        frame_id = ((0x1f - frame_index) << 24) | route_id
+        if frame_index == frame_count - 1:
+            frame_id |= CAN_LAST_FRAME
+        frames.append((frame_id, bytes([message_header]) + payload[offset:offset + 7]))
+    return frames
+
+_message_header = 0
+
+def send_can_data(can_bus, arbitration_id, data):
+    global _message_header
+    _message_header = (_message_header + 1) & 0xff
+    for frame_id, frame_data in build_can_frames(arbitration_id, data, _message_header):
+        can_bus.send(can.Message(arbitration_id=frame_id,
+                                 data=frame_data,
+                                 is_extended_id=True))
 
 def parse(msg):
-    id = parse_can_id(msg.arbitration_id)
-    # logging.info("%x (%x,%x)", id[0], id[1], id[2])
-    msg_id = id[0] >> 8
-    if id[1] != 0x0f or id[2] != 0xff:
+    msg_id = msg.arbitration_id >> 24
+    route_id = msg.arbitration_id & CAN_ROUTE_MASK
+    device_type = (msg.arbitration_id >> 8) & 0xff
+    device_id = msg.arbitration_id & 0xff
+    if device_type != 0x0f or device_id != 0xff:
         # Message to a device with device ID / device type? Not sure
-        if (id[1],id[2]) not in devices:
-            logging.info("Message to device type / id: %02x,%02x", id[1], id[2])
-            devices[(id[1],id[2])] = True
-        return None
+        if (device_type, device_id) not in devices:
+            logging.info("Message to device type / id: %02x,%02x", device_type, device_id)
+            devices[(device_type, device_id)] = True
 
     if msg_id == 0x1f:
         if len(msg.data) >= 2:
@@ -303,7 +619,7 @@ def parse(msg):
                     return None
             else:
                 msg_header = msg.data[1]
-                pending_msg[msg_header] = {
+                pending_msg[(route_id, msg_header)] = {
                     "data": msg.data[2:],
                     "nb_remaining": msg_len - 1
                 }
@@ -312,15 +628,19 @@ def parse(msg):
     elif len(msg.data) >= 2:
         # Message part
         msg_header = msg.data[0]
+        pending_key = (route_id, msg_header)
         # Check if we are expecting it
-        if msg_header in pending_msg:
-            pending_msg[msg_header]["data"] = pending_msg[msg_header]["data"] + msg.data[1:]
-            pending_msg[msg_header]["nb_remaining"] -= 1
-            if pending_msg[msg_header]["nb_remaining"] == 0:
+        if pending_key in pending_msg:
+            pending_msg[pending_key]["data"] = pending_msg[pending_key]["data"] + msg.data[1:]
+            pending_msg[pending_key]["nb_remaining"] -= 1
+            if pending_msg[pending_key]["nb_remaining"] == 0:
                 # Done receiving the big message, yeah
-                # Remove the CRC bytes (Not sure what type of CRC it is..)
-                data = pending_msg[msg_header]["data"][:-2]
-                del pending_msg[msg_header]
+                data = pending_msg[pending_key]["data"]
+                del pending_msg[pending_key]
+                if not verify_crc(data):
+                    logging.error("Invalid CRC for multi-frame message")
+                    return None
+                data = data[:-2]
                 try:
                     return interpret_message(data)
                 except:
@@ -333,6 +653,7 @@ async def read_can_bus(can_bus, mqtt_client):
     #listener = can.Logger()
     notifier = can.Notifier(can_bus, [reader])
     last_query = time.time()
+    schedule_index = 0
     try:
         while True:
             # Wait for next message from AsyncBufferedReader
@@ -345,23 +666,23 @@ async def read_can_bus(can_bus, mqtt_client):
                 # actually see data for it (retained config), then publish
                 # the state on the existing topic.
                 await announce_ha_entity(mqtt_client, key)
-                await mqtt_client.publish(f"{MQTT_STATE_PREFIX}/"+name, value)
+                state_topic = (schedule_state_topic(key[2]) if key[0] == OBJECT_SERVICE
+                               else f"{MQTT_STATE_PREFIX}/{name}")
+                await mqtt_client.publish(state_topic, value)
 
             if time.time() - last_query >= POLLING_INTERVAL:
-                start_id = 0
                 for i in polled_data:
                     data = query(i)
                     try:
-                        arb_id = start_id % 0x10
-                        arb_id = (0x1F0 + arb_id) << 16
-                        arb_id += 0x0801 # This is the fixed address?
-                        msg = can.Message(arbitration_id=arb_id,
-                            data=list(data),
-                            is_extended_id=True)
-                        can_bus.send(msg)
-                        start_id += 1
+                        send_can_data(can_bus, CAN_SINGLE_FRAME | CAN_REQUEST_ROUTE, data)
                     except can.CanError as e:
                         logging.exception(e)
+                try:
+                    send_can_data(can_bus, CAN_SINGLE_FRAME | CAN_REQUEST_ROUTE,
+                                  query_schedule(SCHEDULE_OBJECTS[schedule_index]))
+                    schedule_index = (schedule_index + 1) % len(SCHEDULE_OBJECTS)
+                except can.CanError as e:
+                    logging.exception(e)
                 last_query = time.time()
     finally:
         notifier.stop()
@@ -369,7 +690,6 @@ async def read_can_bus(can_bus, mqtt_client):
 async def handle_mqtt_messages(can_bus, mqtt_client):
     async with mqtt_client.filtered_messages(MQTT_TOPIC_SUBSCRIBE) as messages:
         await mqtt_client.subscribe(MQTT_TOPIC_SUBSCRIBE)
-        start_id = 0
         async for msg in messages:
             if msg.topic == MQTT_TOPIC_SUBSCRIBE:
                 print('Received MQTT message:', msg.payload)
@@ -398,14 +718,7 @@ async def handle_mqtt_messages(can_bus, mqtt_client):
                         converted_value
                     )
                     try:
-                        arb_id = start_id % 0x10
-                        arb_id = (0x1F0 + arb_id) << 16
-                        arb_id += 0x0801 # This is the fixed address?
-                        msg = can.Message(arbitration_id=arb_id,
-                            data=list(data),
-                            is_extended_id=True)
-                        can_bus.send(msg)
-                        start_id += 1
+                        send_can_data(can_bus, CAN_SINGLE_FRAME | CAN_REQUEST_ROUTE, data)
                     except can.CanError as e:
                         logging.exception(e)
 

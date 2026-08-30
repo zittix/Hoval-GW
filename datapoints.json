@@ -1812,6 +1812,7 @@
     "key": [
       4,
       0,
+      
       1009
     ],
     "value": [
@@ -2979,5 +2980,65 @@
       null,
       null
     ]
+  },
+  {
+    "key": [1, 0, 0],
+    "value": ["Heating 1 - Mixed flow temperature", "S16", 1, "°C", null]
+  },
+  {
+    "key": [1, 0, 500],
+    "value": ["Heating 1 - Error status", "U8", 0, null, null]
+  },
+  {
+    "key": [1, 2, 0],
+    "value": ["Heating 3 - Mixed flow temperature", "S16", 1, "°C", null]
+  },
+  {
+    "key": [1, 2, 2020],
+    "value": ["Heating 3 - Outside average value", "S16", 1, "°C", null]
+  },
+  {
+    "key": [1, 2, 7076],
+    "value": ["Unknown datapoint 1/2/7076", "RAW", 0, null, null]
+  },
+  {
+    "key": [2, 0, 500],
+    "value": ["Hot water 1 - Error status", "U8", 0, null, null]
+  },
+  {
+    "key": [2, 0, 503],
+    "value": ["Hot water 1 - Display status", "U8", 0, null, null]
+  },
+  {
+    "key": [2, 0, 504],
+    "value": ["Hot water 1 - ID current week programme", "U8", 0, null, null]
+  },
+  {
+    "key": [2, 0, 505],
+    "value": ["Hot water 1 - Current week programme name", "STR", 0, null, null]
+  },
+  {
+    "key": [2, 0, 2011],
+    "value": ["Unknown datapoint 2/0/2011", "RAW", 0, null, null]
+  },
+  {
+    "key": [2, 0, 2018],
+    "value": ["Unknown datapoint 2/0/2018", "RAW", 0, null, null]
+  },
+  {
+    "key": [2, 0, 3078],
+    "value": ["Unknown datapoint 2/0/3078", "RAW", 0, null, null]
+  },
+  {
+    "key": [2, 0, 4005],
+    "value": ["Hot water 1 - Function name", "STR", 0, null, null]
+  },
+  {
+    "key": [2, 0, 20125],
+    "value": ["Hot water 1 - Energy centre", "U8", 0, null, null]
+  },
+  {
+    "key": [10, 1, 1100],
+    "value": ["Unknown datapoint 10/1/1100", "RAW", 0, null, null]
   }
 ]
