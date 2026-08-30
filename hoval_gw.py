@@ -14,7 +14,7 @@ import json
 import re
 import unicodedata
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 # Change this to match your Home-Assistant / MQTT broker
 broker = '192.168.3.7'
@@ -431,9 +431,32 @@ def decode_object_service(data):
         }
 
     if len(data) < 4:
-        raise ValueError('Truncated schedule message')
+        raise ValueError('Truncated object-service message')
     object_id = int.from_bytes(data[2:4], 'big')
-    kind, object_name = _schedule_object_info(object_id)
+
+    # 0x06/0x86 request/response pairs observed live on the gateway. Their
+    # values are not documented, so retain the selector and value as raw hex.
+    if operation in (0x06, 0x86):
+        if len(data) < 6 or (operation == 0x06 and len(data) != 6):
+            raise ValueError('Invalid object-value request or response')
+        result = {
+            'operation': 'object_value_request' if operation == 0x06 else 'object_value_response',
+            'object_id': f'{object_id:04X}',
+            'selector': data[4:6].hex().upper(),
+        }
+        if operation == 0x86:
+            result['value'] = data[6:].hex().upper()
+        return result
+
+    try:
+        kind, object_name = _schedule_object_info(object_id)
+    except ValueError:
+        return {
+            'operation': 'unknown_object_service',
+            'opcode': f'{operation:02X}',
+            'object_id': f'{object_id:04X}',
+            'payload': data[4:].hex().upper(),
+        }
     result = {'object_id': f'{object_id:04X}', 'object_name': object_name, 'kind': kind}
 
     if operation == 0x00:
@@ -614,7 +637,7 @@ def parse(msg):
             if msg_len == 0:
                 try:
                     return interpret_message(msg.data[1:])
-                except:
+                except Exception:
                     logging.exception(msg.data)
                     return None
             else:
@@ -643,7 +666,7 @@ def parse(msg):
                 data = data[:-2]
                 try:
                     return interpret_message(data)
-                except:
+                except Exception:
                     logging.exception(data)
                     return None
     return None
@@ -668,7 +691,9 @@ async def read_can_bus(can_bus, mqtt_client):
                 await announce_ha_entity(mqtt_client, key)
                 state_topic = (schedule_state_topic(key[2]) if key[0] == OBJECT_SERVICE
                                else f"{MQTT_STATE_PREFIX}/{name}")
-                await mqtt_client.publish(state_topic, value)
+                # Discovery and state are published back-to-back; retain schedule
+                # state so Home Assistant cannot miss it while creating the entity.
+                await mqtt_client.publish(state_topic, value, retain=key[0] == OBJECT_SERVICE)
 
             if time.time() - last_query >= POLLING_INTERVAL:
                 for i in polled_data:
@@ -688,15 +713,15 @@ async def read_can_bus(can_bus, mqtt_client):
         notifier.stop()
 
 async def handle_mqtt_messages(can_bus, mqtt_client):
-    async with mqtt_client.filtered_messages(MQTT_TOPIC_SUBSCRIBE) as messages:
+    async with mqtt_client.messages() as messages:
         await mqtt_client.subscribe(MQTT_TOPIC_SUBSCRIBE)
         async for msg in messages:
-            if msg.topic == MQTT_TOPIC_SUBSCRIBE:
+            if msg.topic.matches(MQTT_TOPIC_SUBSCRIBE):
                 print('Received MQTT message:', msg.payload)
                 can_data = None
                 try:
                     can_data = json.loads(msg.payload)
-                except:
+                except (TypeError, ValueError):
                     pass
                 if can_data:
                     message_id=can_data['id']
@@ -724,6 +749,7 @@ async def handle_mqtt_messages(can_bus, mqtt_client):
 
 async def main():
     while True:
+        can_bus = None
         try:
             mqtt_client = MQTTClient(broker, username=broker_username,password=broker_password)
             can_bus = can.Bus(channel='can0', bustype='socketcan', receive_own_messages=False)
@@ -732,11 +758,17 @@ async def main():
                     read_can_bus(can_bus, mqtt_client),
                     handle_mqtt_messages(can_bus, mqtt_client)
             )
-        except:
+        except asyncio.CancelledError:
+            raise
+        except Exception:
             logging.exception('Error in main loop')
         finally:
-            can_bus.shutdown()
-            await asyncio.sleep(2)
+            if can_bus is not None:
+                can_bus.shutdown()
+        await asyncio.sleep(2)
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

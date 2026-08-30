@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 # Protocol helpers do not need the gateway's runtime dependencies.
 can = types.ModuleType('can')
 can.CanError = Exception
+can.Bus = object
 can.Message = object
 sys.modules.setdefault('can', can)
 mqtt = types.ModuleType('asyncio_mqtt')
@@ -23,6 +24,47 @@ import hoval_gw
 
 
 class TestTopTronicProtocol(unittest.TestCase):
+    def test_live_object_value_packets_are_preserved(self):
+        self.assertEqual(
+            hoval_gw.decode_object_service(bytes.fromhex('62 06 01 00 7A 71')),
+            {'operation': 'object_value_request', 'object_id': '0100', 'selector': '7A71'},
+        )
+        self.assertEqual(
+            hoval_gw.decode_object_service(bytes.fromhex('62 86 01 00 7A 71 00 00 00 00')),
+            {'operation': 'object_value_response', 'object_id': '0100',
+             'selector': '7A71', 'value': '00000000'},
+        )
+        self.assertEqual(
+            hoval_gw.decode_object_service(bytes.fromhex('62 86 02 00 04 00 26 02')),
+            {'operation': 'object_value_response', 'object_id': '0200',
+             'selector': '0400', 'value': '2602'},
+        )
+
+    def test_main_does_not_reconnect_when_cancelled(self):
+        class Bus:
+            stopped = False
+
+            def shutdown(self):
+                self.stopped = True
+
+        class MQTT:
+            async def __aenter__(self):
+                raise asyncio.CancelledError()
+
+            async def __aexit__(self, *args):
+                pass
+
+        bus = Bus()
+        mqtt_client, can_bus = hoval_gw.MQTTClient, hoval_gw.can.Bus
+        hoval_gw.MQTTClient = lambda *args, **kwargs: MQTT()
+        hoval_gw.can.Bus = lambda *args, **kwargs: bus
+        try:
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(hoval_gw.main())
+        finally:
+            hoval_gw.MQTTClient, hoval_gw.can.Bus = mqtt_client, can_bus
+        self.assertTrue(bus.stopped)
+
     def test_schedule_home_assistant_discovery_and_poll(self):
         key = (hoval_gw.OBJECT_SERVICE, 0, 0x3D10)
         payload = hoval_gw.build_schedule_discovery_payload(key)
@@ -171,8 +213,11 @@ class TestTopTronicProtocol(unittest.TestCase):
         zero = hoval_gw.interpret_message(bytes.fromhex('42 01 00 01 F8 00'))
         self.assertEqual(zero, ((1, 0, 504), 'ID current week programme', 0.0))
 
-        schedule_datapoints = [decoded for message in messages
-                               if (decoded := hoval_gw.decode_schedule_datapoint(message))]
+        schedule_datapoints = []
+        for message in messages:
+            decoded = hoval_gw.decode_schedule_datapoint(message)
+            if decoded:
+                schedule_datapoints.append(decoded)
         self.assertEqual(len(schedule_datapoints), 12)
         self.assertEqual(
             {item['operation'] for item in schedule_datapoints},
